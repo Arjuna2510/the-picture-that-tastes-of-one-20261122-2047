@@ -16,284 +16,234 @@ import struct
 import zlib
 
 W, H = 900, 900
+buf = bytearray(W * H * 3)
 
 
-# ---------------------------------------------------------------- pixel buffer
-class Canvas:
-    def __init__(self, w, h):
-        self.w, self.h = w, h
-        self.px = bytearray(w * h * 3)
+def setpx(x, y, r, g, b):
+    if 0 <= x < W and 0 <= y < H:
+        i = (y * W + x) * 3
+        buf[i] = r
+        buf[i + 1] = g
+        buf[i + 2] = b
 
-    def blend(self, x, y, r, g, b, a=1.0):
-        if x < 0 or y < 0 or x >= self.w or y >= self.h or a <= 0:
-            return
-        i = (y * self.w + x) * 3
-        if a >= 1.0:
-            self.px[i] = r
-            self.px[i + 1] = g
-            self.px[i + 2] = b
+
+def blend(x, y, r, g, b, a):
+    if a <= 0:
+        return
+    if 0 <= x < W and 0 <= y < H:
+        i = (y * W + x) * 3
+        if a >= 1:
+            buf[i] = r
+            buf[i + 1] = g
+            buf[i + 2] = b
         else:
-            self.px[i] = int(r * a + self.px[i] * (1 - a))
-            self.px[i + 1] = int(g * a + self.px[i + 1] * (1 - a))
-            self.px[i + 2] = int(b * a + self.px[i + 2] * (1 - a))
-
-    def circle(self, cx, cy, rad, color, alpha=1.0):
-        r, g, b = color
-        x0 = max(0, int(cx - rad))
-        x1 = min(self.w - 1, int(cx + rad) + 1)
-        y0 = max(0, int(cy - rad))
-        y1 = min(self.h - 1, int(cy + rad) + 1)
-        rr = rad * rad
-        for y in range(y0, y1 + 1):
-            dy = y - cy
-            dx = math.sqrt(max(0.0, rr - dy * dy))
-            for x in range(max(x0, int(cx - dx)), min(x1, int(cx + dx)) + 1):
-                self.blend(x, y, r, g, b, alpha)
-
-    def ellipse(self, cx, cy, rx, ry, color, alpha=1.0):
-        r, g, b = color
-        x0 = max(0, int(cx - rx))
-        x1 = min(self.w - 1, int(cx + rx) + 1)
-        y0 = max(0, int(cy - ry))
-        y1 = min(self.h - 1, int(cy + ry) + 1)
-        for y in range(y0, y1 + 1):
-            t = (y - cy) / ry
-            dx = rx * math.sqrt(max(0.0, 1 - t * t))
-            for x in range(max(x0, int(cx - dx)), min(x1, int(cx + dx)) + 1):
-                self.blend(x, y, r, g, b, alpha)
-
-    def ring(self, cx, cy, rx, ry, thick, color, alpha=1.0):
-        # Elliptical ring: draw outer, then punch inner with background is
-        # hard, so draw as many small segments instead — approximate by
-        # drawing outer ellipse then inner ellipse in the caller's bg color.
-        self.ellipse(cx, cy, rx, ry, color, alpha)
-
-    def hline(self, x0, x1, y, color, alpha=1.0):
-        r, g, b = color
-        for x in range(max(0, x0), min(self.w - 1, x1) + 1):
-            self.blend(x, y, r, g, b, alpha)
-
-    def line(self, x0, y0, x1, y1, width, color, alpha=1.0):
-        n = int(max(abs(x1 - x0), abs(y1 - y0)) * 2) + 2
-        for i in range(n + 1):
-            t = i / n
-            x = x0 + (x1 - x0) * t
-            y = y0 + (y1 - y0) * t
-            self.circle(x, y, width / 2.0, color, alpha)
-
-    def bezier(self, pts, width, color, alpha=1.0, steps=60):
-        # pts: list of (x, y) control points (cubic if 4, quadratic if 3)
-        prev = None
-        for i in range(steps + 1):
-            t = i / steps
-            if len(pts) == 4:
-                mt = 1 - t
-                x = (mt ** 3 * pts[0][0] + 3 * mt * mt * t * pts[1][0]
-                     + 3 * mt * t * t * pts[2][0] + t ** 3 * pts[3][0])
-                y = (mt ** 3 * pts[0][1] + 3 * mt * mt * t * pts[1][1]
-                     + 3 * mt * t * t * pts[2][1] + t ** 3 * pts[3][1])
-            else:
-                mt = 1 - t
-                x = mt * mt * pts[0][0] + 2 * mt * t * pts[1][0] + t * t * pts[2][0]
-                y = mt * mt * pts[0][1] + 2 * mt * t * pts[1][1] + t * t * pts[2][1]
-            if prev is not None:
-                self.line(prev[0], prev[1], x, y, width, color, alpha)
-            prev = (x, y)
-
-    def poly(self, points, color, alpha=1.0):
-        # Scanline fill of a simple polygon.
-        r, g, b = color
-        ys = [p[1] for p in points]
-        y0, y1 = int(min(ys)), int(max(ys))
-        n = len(points)
-        for y in range(max(0, y0), min(self.h - 1, y1) + 1):
-            xs = []
-            for i in range(n):
-                x0, yy0 = points[i]
-                x1, yy1 = points[(i + 1) % n]
-                if (yy0 <= y < yy1) or (yy1 <= y < yy0):
-                    t = (y - yy0) / (yy1 - yy0)
-                    xs.append(x0 + t * (x1 - x0))
-            xs.sort()
-            for j in range(0, len(xs) - 1, 2):
-                for x in range(max(0, int(xs[j])), min(self.w - 1, int(xs[j + 1])) + 1):
-                    self.blend(x, y, r, g, b, alpha)
+            buf[i] = int(buf[i] + (r - buf[i]) * a)
+            buf[i + 1] = int(buf[i + 1] + (g - buf[i + 1]) * a)
+            buf[i + 2] = int(buf[i + 2] + (b - buf[i + 2]) * a)
 
 
-# ---------------------------------------------------------------- PNG encoder
-def write_png(path, canvas):
-    def chunk(ctype, data):
-        c = struct.pack(">I", len(data)) + ctype + data
-        c += struct.pack(">I", zlib.crc32(ctype + data) & 0xFFFFFFFF)
-        return c
+def ellipse(cx, cy, rx, ry, color, a=1.0):
+    r, g, b = color
+    y0 = max(0, cy - ry)
+    y1 = min(H - 1, cy + ry)
+    for yy in range(y0, y1 + 1):
+        dy = (yy - cy) / ry
+        rest = 1.0 - dy * dy
+        if rest <= 0:
+            continue
+        dx = rx * math.sqrt(rest)
+        x0 = max(0, int(cx - dx))
+        x1 = min(W - 1, int(cx + dx))
+        base = yy * W
+        if a >= 1:
+            for xx in range(x0, x1 + 1):
+                i = (base + xx) * 3
+                buf[i] = r
+                buf[i + 1] = g
+                buf[i + 2] = b
+        else:
+            for xx in range(x0, x1 + 1):
+                i = (base + xx) * 3
+                buf[i] = int(buf[i] + (r - buf[i]) * a)
+                buf[i + 1] = int(buf[i + 1] + (g - buf[i + 1]) * a)
+                buf[i + 2] = int(buf[i + 2] + (b - buf[i + 2]) * a)
 
-    w, h = canvas.w, canvas.h
+
+def disc(cx, cy, rad, color, a=1.0):
+    ellipse(cx, cy, rad, rad, color, a)
+
+
+def hline(x0, x1, y, color, a=1.0):
+    r, g, b = color
+    if not (0 <= y < H):
+        return
+    x0 = max(0, x0)
+    x1 = min(W - 1, x1)
+    base = y * W
+    if a >= 1:
+        for xx in range(x0, x1 + 1):
+            i = (base + xx) * 3
+            buf[i] = r
+            buf[i + 1] = g
+            buf[i + 2] = b
+    else:
+        for xx in range(x0, x1 + 1):
+            i = (base + xx) * 3
+            buf[i] = int(buf[i] + (r - buf[i]) * a)
+            buf[i + 1] = int(buf[i + 1] + (g - buf[i + 1]) * a)
+            buf[i + 2] = int(buf[i + 2] + (b - buf[i + 2]) * a)
+
+
+def line(x0, y0, x1, y1, w, color, a=1.0):
+    steps = int(max(abs(x1 - x0), abs(y1 - y0)) / max(2, w * 0.5)) + 1
+    for i in range(steps + 1):
+        t = i / steps
+        disc(int(x0 + (x1 - x0) * t), int(y0 + (y1 - y0) * t), max(1, w // 2), color, a)
+
+
+def in_broth(x, y):
+    return ((x - 450) / 300.0) ** 2 + ((y - 545) / 128.0) ** 2 <= 1.0
+
+
+def strand(x0, x1, ybase, amp, waves, phase, w, color, a=1.0):
+    n = max(2, (x1 - x0) // 3)
+    for i in range(n + 1):
+        x = x0 + (x1 - x0) * i // n
+        y = int(ybase + amp * math.sin(phase + (x - x0) / float(x1 - x0) * waves * 2 * math.pi))
+        if in_broth(x, y):
+            disc(x, y, max(1, w // 2), color, a)
+
+
+def row_gradient(y0, y1, top, bot):
+    for y in range(y0, min(H, y1)):
+        t = (y - y0) / max(1, (y1 - y0 - 1))
+        r = int(top[0] + (bot[0] - top[0]) * t)
+        g = int(top[1] + (bot[1] - top[1]) * t)
+        b = int(top[2] + (bot[2] - top[2]) * t)
+        buf[y * W * 3:(y + 1) * W * 3] = bytes((r, g, b)) * W
+
+
+def write_png(path):
     raw = bytearray()
-    for y in range(h):
-        raw.append(0)  # filter: none
-        raw += canvas.px[y * w * 3:(y + 1) * w * 3]
+    for y in range(H):
+        raw.append(0)
+        raw += buf[y * W * 3:(y + 1) * W * 3]
+    comp = zlib.compress(bytes(raw), 6)
+
+    def chunk(tag, data):
+        out = struct.pack(">I", len(data)) + tag + data
+        return out + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
     png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", comp)
     png += chunk(b"IEND", b"")
     with open(path, "wb") as f:
         f.write(png)
-    return len(png)
 
 
-# ---------------------------------------------------------------- the picture
 def draw():
-    c = Canvas(W, H)
-
-    # Warm cream background, soft vertical gradient + warm glow at centre.
-    for y in range(H):
-        t = y / H
-        r = int(250 - 18 * t)
-        g = int(232 - 34 * t)
-        b = int(205 - 42 * t)
-        row = bytes((r, g, b)) * W
-        c.px[y * W * 3:(y + 1) * W * 3] = row
-    # Warm radial glow behind the bowl.
-    for y in range(120, 760):
-        for x in range(60, 840):
-            dx = (x - 450) / 430.0
-            dy = (y - 470) / 360.0
-            d = dx * dx + dy * dy
-            if d < 1.0:
-                a = (1 - d) * 0.16
-                c.blend(x, y, 255, 214, 150, a)
-
-    # Wooden table band along the bottom.
-    for y in range(700, H):
-        t = (y - 700) / 200.0
-        r = int(176 - 30 * t)
-        g = int(128 - 26 * t)
-        b = int(82 - 18 * t)
-        c.px[y * W * 3:(y + 1) * W * 3] = bytes((r, g, b)) * W
-    c.hline(0, W - 1, 700, (120, 82, 48), 0.55)
-    c.hline(0, W - 1, 790, (120, 82, 48), 0.35)
-
-    # Soft shadow under the bowl.
-    c.ellipse(450, 742, 330, 42, (90, 55, 25), 0.28)
-
-    # Bowl body: deep indigo ceramic, wide and generous.
-    c.ellipse(450, 585, 335, 195, (38, 46, 68))
-    c.ellipse(450, 578, 335, 195, (30, 37, 56))
-    # Bowl foot ring.
-    c.ellipse(450, 758, 150, 26, (22, 28, 44))
-    # Bowl rim highlight (top edge catching light).
-    c.ellipse(450, 512, 335, 118, (52, 64, 92))
-    # Rim band.
-    c.ellipse(450, 520, 318, 108, (64, 76, 106))
-    # Broth: rich golden, glowing.
-    c.ellipse(450, 522, 296, 96, (216, 138, 43))
-    c.ellipse(450, 520, 282, 88, (232, 164, 62))
-    c.ellipse(450, 516, 250, 74, (240, 178, 80))
-    # Broth gloss: soft sheen upper-left, kept small so it reads as
-    # light on liquid, not a flat patch.
-    c.ellipse(355, 488, 90, 20, (255, 214, 130), 0.35)
-    c.ellipse(330, 482, 44, 11, (255, 232, 170), 0.5)
-
-    # ---- noodles swirling in the broth
-    noodle_dark = (206, 138, 32)
-    noodle = (244, 196, 88)
-    noodle_hi = (255, 222, 140)
-    swirls = [
-        [(300, 540), (360, 500), (430, 540), (470, 505)],
-        [(330, 560), (400, 520), (470, 560), (520, 520)],
-        [(380, 575), (450, 540), (520, 575), (570, 540)],
-        [(280, 520), (350, 545), (420, 515), (480, 545)],
-        [(420, 560), (500, 525), (560, 555), (610, 525)],
-        [(340, 495), (410, 520), (480, 492), (540, 518)],
-        [(470, 585), (540, 550), (600, 580), (640, 548)],
-        [(250, 545), (320, 570), (390, 545), (440, 570)],
-    ]
-    for s in swirls:
-        c.bezier(s, 9, noodle_dark, 0.9)
-        c.bezier([(x, y - 3) for x, y in s], 5, noodle, 0.95)
-        c.bezier([(x, y - 5) for x, y in s], 2, noodle_hi, 0.9)
-
-    # ---- chashu: two glistening slices, rose-pink with a darker swirl
-    # Soft contact shadows so the slices sit IN the broth, not on it.
-    c.ellipse(588, 512, 62, 34, (150, 90, 30), 0.25)
-    c.ellipse(643, 556, 50, 28, (150, 90, 30), 0.25)
-    for (cx, cy, rad) in [(585, 500, 62), (640, 545, 50)]:
-        c.circle(cx, cy, rad, (232, 165, 150))
-        c.circle(cx, cy, rad - 12, (226, 140, 126))
-        c.circle(cx, cy, rad - 26, (240, 180, 162))
-        c.circle(cx, cy, rad - 38, (214, 122, 110))
-        c.circle(cx - 14, cy - 16, 12, (255, 205, 190), 0.8)
-
-    # ---- soft egg: white with a jammy orange yolk
-    c.circle(315, 505, 56, (252, 246, 232))
-    c.circle(315, 505, 56, (240, 228, 205), 0.0)
-    c.circle(315, 505, 30, (240, 140, 30))
-    c.circle(315, 505, 22, (248, 158, 44))
-    c.circle(305, 495, 9, (255, 196, 90), 0.9)
-
-    # ---- nori sheet standing at the back of the bowl
-    c.poly([(600, 470), (660, 430), (672, 500), (612, 540)], (32, 66, 38))
-    c.poly([(608, 468), (656, 436), (664, 496), (616, 532)], (44, 86, 50))
-
-    # ---- spring onion rings scattered on the broth
-    for (cx, cy, rad) in [(270, 500, 12), (420, 480, 11), (500, 545, 12),
-                          (560, 575, 10), (380, 580, 11), (470, 505, 10),
-                          (610, 580, 11), (300, 565, 10)]:
-        c.circle(cx, cy, rad, (74, 148, 66))
-        c.circle(cx, cy, rad - 4, (140, 196, 90))
-        c.circle(cx, cy, rad - 7, (60, 120, 52))
-
-    # ---- chili oil droplets: glossy red-orange jewels
-    for (cx, cy, rad) in [(440, 555, 9), (520, 495, 8), (360, 540, 7),
-                          (590, 530, 8), (250, 530, 7)]:
-        c.circle(cx, cy, rad, (198, 52, 24))
-        c.circle(cx - 2, cy - 3, 3, (255, 120, 70), 0.9)
-
-    # ---- chopsticks lifting glossy noodles (from upper right)
-    c.line(700, 150, 520, 430, 16, (122, 74, 32))
-    c.line(724, 168, 548, 438, 16, (140, 88, 40))
-    c.line(700, 150, 520, 430, 5, (168, 112, 56), 0.8)
-    # Noodle strands hanging from the chopstick tips, glistening.
-    lift = [
-        [(520, 430), (505, 480), (530, 520), (515, 560)],
-        [(535, 435), (525, 490), (550, 525), (538, 565)],
-        [(548, 440), (545, 495), (565, 530), (555, 568)],
-        [(508, 428), (490, 475), (512, 515), (500, 552)],
-    ]
-    for s in lift:
-        c.bezier(s, 10, noodle_dark, 0.95)
-        c.bezier([(x - 2, y) for x, y in s], 5, noodle, 0.95)
-        c.bezier([(x - 3, y) for x, y in s], 2, noodle_hi, 0.9)
-
-    # ---- steam: soft translucent wisps rising off the hot broth
-    # Thin, curvy and faint — steam, not candles. Several passes with
-    # tapering alpha so the wisps fade as they rise.
-    steam = [
-        [(380, 470), (352, 410), (392, 350), (368, 285)],
-        [(450, 460), (474, 395), (438, 330), (464, 268)],
-        [(520, 465), (544, 400), (508, 340), (534, 280)],
-        [(300, 480), (282, 425), (312, 368), (292, 315)],
-    ]
-    for s in steam:
-        c.bezier(s, 10, (255, 250, 240), 0.10)
-        c.bezier(s, 6, (255, 252, 245), 0.16)
-        # brighter, thinner core low down, fading upward
-        c.bezier([s[0], s[1], s[2]], 4, (255, 255, 250), 0.20)
-
-    # ---- final light: warm rim light on the bowl's left edge
-    c.ellipse(150, 590, 26, 110, (255, 220, 160), 0.18)
-    c.ellipse(450, 470, 300, 60, (255, 235, 190), 0.10)
-
-    return c
+    # -- warm background + glow -------------------------------------------
+    row_gradient(0, H, (247, 232, 200), (226, 190, 132))
+    ellipse(450, 480, 430, 330, (255, 214, 140), 0.25)
+    # -- wooden table ------------------------------------------------------
+    row_gradient(640, H, (176, 128, 84), (148, 102, 64))
+    for yy in (700, 770, 840):
+        hline(0, W - 1, yy, (120, 80, 48), 0.18)
+    # -- soft shadow under the bowl ---------------------------------------
+    ellipse(450, 738, 330, 42, (60, 35, 18), 0.28)
+    # -- bowl: dark lacquer body, opening, golden broth -------------------
+    ellipse(450, 600, 335, 165, (44, 26, 18))
+    ellipse(450, 585, 335, 150, (58, 32, 22))
+    ellipse(450, 545, 320, 140, (24, 14, 10))
+    ellipse(450, 545, 300, 128, (217, 138, 43))
+    # broth light: warm pool in the middle
+    ellipse(430, 520, 260, 105, (238, 164, 66), 0.55)
+    ellipse(425, 512, 200, 80, (245, 183, 88), 0.45)
+    ellipse(420, 505, 130, 55, (250, 200, 110), 0.4)
+    # broth depth at the bottom edge
+    ellipse(450, 612, 280, 55, (180, 105, 30), 0.35)
+    # oil glints on the broth
+    for (gx, gy, gr) in ((360, 480, 26), (520, 455, 20), (620, 520, 24), (300, 560, 16)):
+        ellipse(gx, gy, gr, gr // 2, (255, 220, 130), 0.5)
+    # -- noodles: wavy strands across the broth ---------------------------
+    for i in range(12):
+        yb = 480 + i * 11
+        dy = (yb - 545) / 128.0
+        rest = 1.0 - dy * dy
+        if rest <= 0:
+            continue
+        dx = int(300 * math.sqrt(rest)) - 8
+        x0, x1 = 450 - dx, 450 + dx
+        strand(x0, x1, yb, 14, 2.2 + (i % 3) * 0.5, i * 1.3, 6, (209, 160, 55))
+        strand(x0, x1, yb - 3, 14, 2.2 + (i % 3) * 0.5, i * 1.3, 6, (247, 215, 119))
+    # -- noodles lifted by the chopsticks ----------------------------------
+    for k in range(7):
+        x0, y0 = 596 + k * 13, 482 - k * 6
+        x1, y1 = 664 + k * 10, 330
+        steps = 26
+        for s in range(steps + 1):
+            t = s / steps
+            x = int(x0 + (x1 - x0) * t + 12 * math.sin(t * 9 + k))
+            y = int(y0 + (y1 - y0) * t)
+            disc(x, y, 4, (247, 215, 119))
+    # -- chopsticks ---------------------------------------------------------
+    line(770, 150, 655, 320, 13, (107, 66, 38))
+    line(795, 180, 680, 335, 13, (96, 58, 32))
+    line(766, 158, 658, 314, 4, (150, 100, 60), 0.8)
+    line(791, 188, 683, 329, 4, (140, 92, 54), 0.8)
+    # -- soft egg -----------------------------------------------------------
+    disc(320, 500, 54, (253, 246, 233))
+    disc(330, 510, 44, (240, 224, 196), 0.5)
+    disc(320, 500, 27, (245, 158, 27))
+    disc(310, 490, 9, (255, 196, 90), 0.8)
+    # -- chashu slices ------------------------------------------------------
+    ellipse(560, 580, 62, 48, (216, 136, 115))
+    ellipse(560, 580, 38, 28, (190, 100, 80))
+    ellipse(560, 580, 16, 12, (226, 160, 140))
+    ellipse(640, 540, 55, 42, (216, 136, 115))
+    ellipse(640, 540, 33, 24, (190, 100, 80))
+    ellipse(640, 540, 14, 10, (226, 160, 140))
+    # -- spring onions, sesame, chili --------------------------------------
+    onions = [(400, 470), (470, 440), (540, 470), (380, 600), (480, 610),
+              (590, 640), (680, 590), (350, 530), (520, 600), (440, 650),
+              (610, 450), (300, 600)]
+    for (ox, oy) in onions:
+        if in_broth(ox, oy):
+            disc(ox, oy, 7, (46, 130, 62))
+            disc(ox, oy, 3, (120, 190, 90))
+    import random
+    rnd = random.Random(7)
+    for _ in range(26):
+        sx = rnd.randint(200, 700)
+        sy = rnd.randint(440, 650)
+        if in_broth(sx, sy):
+            disc(sx, sy, 2, (255, 244, 214) if rnd.random() < 0.6 else (60, 40, 20), 0.85)
+    for (cx0, cy0, cx1, cy1) in ((500, 470, 540, 462), (480, 640, 520, 648), (380, 620, 410, 612)):
+        line(cx0, cy0, cx1, cy1, 2, (200, 60, 50))
+    # -- steam rising off the broth ----------------------------------------
+    for sx in (340, 420, 500, 570):
+        for k in range(12):
+            y = 395 - k * 24
+            x = int(sx + 16 * math.sin(k * 0.8 + sx))
+            ellipse(x, y, 30 + k, 16, (255, 255, 255), 0.15)
+    # -- bright rim highlight, top-left ------------------------------------
+    for k in range(26):
+        t = k / 25.0
+        ang = math.pi + t * math.pi * 0.55
+        x = int(450 + 314 * math.cos(ang))
+        y = int(545 + 134 * math.sin(ang))
+        disc(x, y, 3, (255, 235, 190), 0.5)
+    # -- big soft gloss on the broth ---------------------------------------
+    ellipse(400, 490, 150, 55, (255, 215, 130), 0.35)
+    ellipse(590, 480, 90, 38, (255, 225, 150), 0.3)
 
 
 def main():
-    out_dir = os.environ.get("OUTPUT_DIR", "/output")
-    os.makedirs(out_dir, exist_ok=True)
-    canvas = draw()
-    path = os.path.join(out_dir, "entry.png")
-    size = write_png(path, canvas)
-    print(f"wrote {path} {canvas.w}x{canvas.h} {size} bytes")
+    out = os.environ.get("OUTPUT_DIR", "/output")
+    os.makedirs(out, exist_ok=True)
+    draw()
+    write_png(os.path.join(out, "entry.png"))
 
 
 if __name__ == "__main__":
